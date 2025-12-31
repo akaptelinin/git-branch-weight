@@ -1,8 +1,21 @@
 # git-branch-weight
 
-Analyze disk space used by unmerged Git branches. Find which branches contribute the most to repository size.
+CLI that scans a Git repository and shows how much disk space every **unmerged** branch uses
 
-## Installation
+---
+
+## Why
+
+Over-grown feature branches slow down `git clone` and waste storage. Knowing the worst offenders lets you delete or squash them first
+
+## How it works
+
+1. Collects all branches not merged into the default branch (master/main)
+2. For each branch, finds all blob objects not reachable from the default branch
+3. Calculates unique size (blobs only in this branch) and shared size (blobs in multiple unmerged branches)
+4. Sorts branches by total size descending
+
+## Install
 
 ```bash
 cargo install --git https://github.com/akaptelinin/git-branch-weight
@@ -19,53 +32,66 @@ cargo build --release
 ## Usage
 
 ```bash
-git-branch-weight --repo /path/to/repo --out /path/to/output
+git-branch-weight
+
+Options
+  --repo, -r <path>   # path to the Git repository (default = cwd)
+  --out, -o <path>    # output directory for the report (default = ./branch-weight-report)
+  --branch, -b <name> # default branch name (auto-detects master/main)
 ```
-
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--repo <PATH>` | Path to Git repository (default: current directory) |
-| `--out <PATH>` | Output directory for reports (default: `./branch-weight-report`) |
-| `--branch <REF>` | Default branch to compare against (auto-detects master/main) |
 
 ## Output
 
-Creates two files in the output directory:
+```
+<dir>/
+  branches.json    full stats, biggest first
+  branches.tsv     tab-separated for spreadsheets
+```
 
-### branches.json
+### Example: `branches.json`
 
 ```json
 [
   {
-    "branch": "origin/feature-branch",
+    "branch": "origin/feature/payments-v2",
     "totalSizeMB": "125.4 MB",
     "uniqueSizeMB": "120.1 MB",
     "sharedSizeMB": "5.3 MB"
+  },
+  {
+    "branch": "origin/hotfix/billing",
+    "totalSizeMB": "84.2 MB",
+    "uniqueSizeMB": "12.0 MB",
+    "sharedSizeMB": "72.2 MB"
   }
 ]
 ```
 
-### branches.tsv
+### Example: `branches.tsv`
 
 ```
 Branch	Total Size	Unique Size	Shared Size	Objects	Unique	Shared
-origin/feature-branch	125.4 MB	120.1 MB	5.3 MB	1542	1500	42
+origin/feature/payments-v2	125.4 MB	120.1 MB	5.3 MB	1542	1500	42
+origin/hotfix/billing	84.2 MB	12.0 MB	72.2 MB	892	120	772
 ```
-
-## How it works
-
-1. Lists all branches not merged into the default branch
-2. For each branch, finds all blob objects not in the default branch
-3. Calculates unique size (objects only in this branch) and shared size (objects in multiple unmerged branches)
-4. Sorts branches by total size descending
 
 ## Performance
 
-~33 seconds on a repository with 1400 unmerged branches.
+| Repository | Branches | Time |
+|------------|----------|------|
+| ~200k commits, 1400 unmerged branches | 1400 | ~33s |
 
 Uses parallel processing via [rayon](https://github.com/rayon-rs/rayon) and pipes `git rev-list` to `git cat-file` for efficient object enumeration.
+
+## Limits
+
+* Requires `git` CLI in PATH
+* Tested on macOS/Linux, should work on Windows with Git-for-Windows
+* Measures actual blob sizes, not estimated compressed size
+
+## See also
+
+* [unmerged-branches-weight](https://github.com/nickovchinnikov/unmerged-branches-weight) — Node.js version with estimated compression
 
 ## License
 
