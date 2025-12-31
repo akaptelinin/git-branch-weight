@@ -27,11 +27,17 @@ pub fn analyze_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<Br
     let branch_count = branches.len();
     println!("Found {} branches to analyze", branch_count);
 
+    if branch_count == 0 {
+        return Ok(Vec::new());
+    }
+
     let branch_names: Vec<String> = branches.iter().map(|(name, _)| name.clone()).collect();
+    let repo_path_owned = repo_path.to_path_buf();
+    let default_branch_owned = default_branch.to_string();
 
     println!("Collecting unmerged objects from branches...");
 
-    let partial_maps: Vec<(u32, FxHashMap<Box<str>, u64>)> = branches
+    let partial_maps: Vec<(u32, FxHashMap<String, u64>)> = branches
         .par_iter()
         .enumerate()
         .filter_map(|(i, (_, tip))| {
@@ -39,7 +45,7 @@ pub fn analyze_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<Br
                 eprintln!("Processing branch {}/{}", i, branch_count);
             }
 
-            collect_unmerged_objects(repo_path, tip, default_branch)
+            collect_unmerged_blobs(&repo_path_owned, tip, &default_branch_owned)
                 .ok()
                 .filter(|m| !m.is_empty())
                 .map(|m| (i as u32, m))
@@ -47,7 +53,7 @@ pub fn analyze_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<Br
         .collect();
 
     println!("Merging {} branch results...", partial_maps.len());
-    let mut object_map: FxHashMap<Box<str>, ObjectInfo> = FxHashMap::default();
+    let mut object_map: FxHashMap<String, ObjectInfo> = FxHashMap::default();
 
     for (branch_idx, branch_objects) in partial_maps {
         for (oid, size) in branch_objects {
@@ -107,12 +113,12 @@ pub fn analyze_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<Br
     Ok(results)
 }
 
-fn collect_unmerged_objects(
+fn collect_unmerged_blobs(
     repo_path: &Path,
     branch_ref: &str,
     default_branch: &str,
-) -> Result<FxHashMap<Box<str>, u64>> {
-    let rev_list = Command::new("git")
+) -> Result<FxHashMap<String, u64>> {
+    let mut rev_list = Command::new("git")
         .args(["rev-list", "--objects", branch_ref, "--not", default_branch])
         .current_dir(repo_path)
         .stdout(Stdio::piped())
@@ -129,33 +135,41 @@ fn collect_unmerged_objects(
         .spawn()
         .context("Failed to spawn git cat-file")?;
 
-    let rev_stdout = rev_list.stdout.unwrap();
-    let mut cat_stdin = cat_file.stdin.take().unwrap();
+    let rev_stdout = rev_list.stdout.take().unwrap();
+    let cat_stdin = cat_file.stdin.take().unwrap();
+    let cat_stdout = cat_file.stdout.take().unwrap();
 
-    std::thread::spawn(move || {
+    let writer_handle = std::thread::spawn(move || {
         let reader = BufReader::new(rev_stdout);
-        for line in reader.lines().map_while(|l| l.ok()) {
-            let oid = line.split_whitespace().next().unwrap_or("");
-            if !oid.is_empty() {
-                let _ = writeln!(cat_stdin, "{}", oid);
+        let mut writer = cat_stdin;
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                if let Some(oid) = line.split_whitespace().next() {
+                    let _ = writeln!(writer, "{}", oid);
+                }
             }
         }
     });
 
-    let cat_stdout = cat_file.stdout.take().unwrap();
+    let mut blobs: FxHashMap<String, u64> = FxHashMap::default();
     let reader = BufReader::new(cat_stdout);
-    let mut objects = FxHashMap::default();
 
-    for line in reader.lines().map_while(|l| l.ok()) {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 && parts[1] == "blob" {
-            if let Ok(size) = parts[2].parse::<u64>() {
-                objects.insert(parts[0].into(), size);
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 && parts[1] == "blob" {
+                if let Ok(size) = parts[2].parse::<u64>() {
+                    blobs.insert(parts[0].to_string(), size);
+                }
             }
         }
     }
 
-    Ok(objects)
+    let _ = writer_handle.join();
+    let _ = rev_list.wait();
+    let _ = cat_file.wait();
+
+    Ok(blobs)
 }
 
 fn collect_branches_via_git(repo_path: &Path) -> Result<Vec<(String, String)>> {
