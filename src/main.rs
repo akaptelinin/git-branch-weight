@@ -1,8 +1,10 @@
+mod git;
 mod objects;
 mod report;
 
 use anyhow::Result;
 use clap::Parser;
+use git::{GitOps, RealGit};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -32,14 +34,16 @@ fn main() -> Result<()> {
 
     println!("Opening repository: {}", repo_path.display());
 
+    let git = RealGit;
+
     let default_branch = match &args.branch {
         Some(b) => b.clone(),
-        None => objects::detect_default_branch(&repo_path)?,
+        None => git.detect_default_branch(&repo_path)?,
     };
 
     println!("Default branch: {}", default_branch);
 
-    let branch_weights = objects::analyze_branches(&repo_path, &default_branch)?;
+    let branch_weights = objects::analyze_branches(&git, &repo_path, &default_branch)?;
 
     std::fs::create_dir_all(&out_dir)?;
     report::write_reports(&out_dir, &branch_weights)?;
