@@ -1,15 +1,14 @@
 use anyhow::{Context, Result};
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct ObjectInfo {
     pub size: u64,
-    pub branches: HashSet<String>,
+    pub branches: FxHashSet<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,46 +24,55 @@ pub struct BranchWeight {
 
 pub fn analyze_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<BranchWeight>> {
     let branches = collect_branches_via_git(repo_path)?;
-    println!("Found {} branches to analyze", branches.len());
+    let branch_count = branches.len();
+    println!("Found {} branches to analyze", branch_count);
 
-    let object_map: Mutex<HashMap<String, ObjectInfo>> = Mutex::new(HashMap::new());
+    let branch_names: Vec<String> = branches.iter().map(|(name, _)| name.clone()).collect();
 
     println!("Collecting unmerged objects from branches...");
-    let total_branches = branches.len();
 
-    branches.par_iter().enumerate().for_each(|(i, (branch_name, tip))| {
-        if i % 100 == 0 {
-            println!("Processing branch {}/{}", i, total_branches);
-        }
-
-        // Use --not to get only objects NOT in default branch
-        if let Ok(branch_objects) = collect_unmerged_objects(repo_path, tip, default_branch) {
-            let mut map = object_map.lock().unwrap();
-
-            for (oid, size) in branch_objects {
-                map.entry(oid)
-                    .and_modify(|info| {
-                        info.branches.insert(branch_name.clone());
-                    })
-                    .or_insert_with(|| {
-                        let mut branches = HashSet::new();
-                        branches.insert(branch_name.clone());
-                        ObjectInfo { size, branches }
-                    });
+    let partial_maps: Vec<(u32, FxHashMap<Box<str>, u64>)> = branches
+        .par_iter()
+        .enumerate()
+        .filter_map(|(i, (_, tip))| {
+            if i % 100 == 0 {
+                eprintln!("Processing branch {}/{}", i, branch_count);
             }
+
+            collect_unmerged_objects(repo_path, tip, default_branch)
+                .ok()
+                .filter(|m| !m.is_empty())
+                .map(|m| (i as u32, m))
+        })
+        .collect();
+
+    println!("Merging {} branch results...", partial_maps.len());
+    let mut object_map: FxHashMap<Box<str>, ObjectInfo> = FxHashMap::default();
+
+    for (branch_idx, branch_objects) in partial_maps {
+        for (oid, size) in branch_objects {
+            object_map
+                .entry(oid)
+                .and_modify(|info| {
+                    info.branches.insert(branch_idx);
+                })
+                .or_insert_with(|| {
+                    let mut branches = FxHashSet::default();
+                    branches.insert(branch_idx);
+                    ObjectInfo { size, branches }
+                });
         }
-    });
+    }
 
     println!("Calculating branch weights...");
-    let object_map = object_map.into_inner().unwrap();
 
-    let mut branch_stats: HashMap<String, (u64, u64, usize, usize)> = HashMap::new();
+    let mut branch_stats: Vec<(u64, u64, usize, usize)> = vec![(0, 0, 0, 0); branch_count];
 
-    for (_oid, info) in &object_map {
+    for info in object_map.values() {
         let is_shared = info.branches.len() > 1;
 
-        for branch in &info.branches {
-            let entry = branch_stats.entry(branch.clone()).or_insert((0, 0, 0, 0));
+        for &branch_idx in &info.branches {
+            let entry = &mut branch_stats[branch_idx as usize];
             if is_shared {
                 entry.1 += info.size;
                 entry.3 += 1;
@@ -77,9 +85,11 @@ pub fn analyze_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<Br
 
     let mut results: Vec<BranchWeight> = branch_stats
         .into_iter()
-        .map(|(branch, (unique_size, shared_size, unique_count, shared_count))| {
+        .enumerate()
+        .filter(|(_, (u, s, _, _))| *u > 0 || *s > 0)
+        .map(|(i, (unique_size, shared_size, unique_count, shared_count))| {
             BranchWeight {
-                branch,
+                branch: branch_names[i].clone(),
                 unique_size,
                 shared_size,
                 total_size: unique_size + shared_size,
@@ -97,8 +107,11 @@ pub fn analyze_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<Br
     Ok(results)
 }
 
-fn collect_unmerged_objects(repo_path: &Path, branch_ref: &str, default_branch: &str) -> Result<HashMap<String, u64>> {
-    // Use --not to get only objects NOT in default branch - much faster!
+fn collect_unmerged_objects(
+    repo_path: &Path,
+    branch_ref: &str,
+    default_branch: &str,
+) -> Result<FxHashMap<Box<str>, u64>> {
     let rev_list = Command::new("git")
         .args(["rev-list", "--objects", branch_ref, "--not", default_branch])
         .current_dir(repo_path)
@@ -121,7 +134,7 @@ fn collect_unmerged_objects(repo_path: &Path, branch_ref: &str, default_branch: 
 
     std::thread::spawn(move || {
         let reader = BufReader::new(rev_stdout);
-        for line in reader.lines().filter_map(|l| l.ok()) {
+        for line in reader.lines().map_while(|l| l.ok()) {
             let oid = line.split_whitespace().next().unwrap_or("");
             if !oid.is_empty() {
                 let _ = writeln!(cat_stdin, "{}", oid);
@@ -131,18 +144,13 @@ fn collect_unmerged_objects(repo_path: &Path, branch_ref: &str, default_branch: 
 
     let cat_stdout = cat_file.stdout.take().unwrap();
     let reader = BufReader::new(cat_stdout);
-    let mut objects = HashMap::new();
+    let mut objects = FxHashMap::default();
 
-    for line in reader.lines().filter_map(|l| l.ok()) {
+    for line in reader.lines().map_while(|l| l.ok()) {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 {
-            let oid = parts[0].to_string();
-            let obj_type = parts[1];
-            // Only count blobs (actual file content)
-            if obj_type == "blob" {
-                if let Ok(size) = parts[2].parse::<u64>() {
-                    objects.insert(oid, size);
-                }
+        if parts.len() >= 3 && parts[1] == "blob" {
+            if let Ok(size) = parts[2].parse::<u64>() {
+                objects.insert(parts[0].into(), size);
             }
         }
     }
@@ -152,7 +160,13 @@ fn collect_unmerged_objects(repo_path: &Path, branch_ref: &str, default_branch: 
 
 fn collect_branches_via_git(repo_path: &Path) -> Result<Vec<(String, String)>> {
     let output = Command::new("git")
-        .args(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes"])
+        .args([
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "--no-merged=HEAD",
+            "refs/heads",
+            "refs/remotes",
+        ])
         .current_dir(repo_path)
         .output()
         .context("Failed to run git for-each-ref")?;
