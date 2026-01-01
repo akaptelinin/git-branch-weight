@@ -67,6 +67,56 @@ pub fn analyze_branches<G: GitOps>(
     Ok(results)
 }
 
+#[derive(Debug, Clone)]
+pub struct CommitWeight {
+    pub commit: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchDetail {
+    pub branch: String,
+    pub total_size: u64,
+    pub commits: Vec<CommitWeight>,
+}
+
+pub fn analyze_branch_details<G: GitOps>(
+    git: &G,
+    repo_path: &Path,
+    branches: &[BranchWeight],
+    default_branch: &str,
+    top_n: usize,
+) -> Result<Vec<BranchDetail>> {
+    let top_branches: Vec<_> = branches.iter().take(top_n).collect();
+
+    let details: Vec<BranchDetail> = top_branches
+        .par_iter()
+        .filter_map(|bw| {
+            let branch_ref = format!("refs/remotes/{}", bw.branch);
+            let commits = git.get_unmerged_commits(repo_path, &branch_ref, default_branch).ok()?;
+
+            let commit_weights: Vec<CommitWeight> = commits
+                .into_iter()
+                .map(|cb| {
+                    let size: u64 = cb.blobs.values().sum();
+                    CommitWeight { commit: cb.commit, size }
+                })
+                .filter(|cw| cw.size > 0)
+                .collect();
+
+            let total: u64 = commit_weights.iter().map(|c| c.size).sum();
+
+            Some(BranchDetail {
+                branch: bw.branch.clone(),
+                total_size: total,
+                commits: commit_weights,
+            })
+        })
+        .collect();
+
+    Ok(details)
+}
+
 fn merge_branch_objects(
     partial_maps: Vec<(u32, FxHashMap<String, u64>)>,
 ) -> FxHashMap<String, ObjectInfo> {
@@ -151,6 +201,10 @@ mod tests {
 
         fn get_unmerged_blobs(&self, _repo: &Path, branch: &str, _exclude: &str) -> Result<HashMap<String, u64>> {
             Ok(self.blobs.get(branch).cloned().unwrap_or_default())
+        }
+
+        fn get_unmerged_commits(&self, _repo: &Path, _branch: &str, _exclude: &str) -> Result<Vec<crate::git::CommitBlobs>> {
+            Ok(Vec::new())
         }
 
         fn detect_default_branch(&self, _repo: &Path) -> Result<String> {

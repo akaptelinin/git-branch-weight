@@ -18,11 +18,14 @@ struct Args {
     #[arg(short, long)]
     out: Option<PathBuf>,
 
-    #[arg(short, long)]
+    #[arg(short = 'B', long)]
     branch: Option<String>,
 
     #[arg(short = 'y', long)]
     no_prompt: bool,
+
+    #[arg(short, long, default_value = "0")]
+    details: usize,
 }
 
 fn main() -> Result<()> {
@@ -47,6 +50,12 @@ fn main() -> Result<()> {
 
     std::fs::create_dir_all(&out_dir)?;
     report::write_reports(&out_dir, &branch_weights)?;
+
+    if args.details > 0 {
+        println!("Analyzing top {} branches for commits...", args.details);
+        let details = objects::analyze_branch_details(&git, &repo_path, &branch_weights, &default_branch, args.details)?;
+        report::write_detailed_report(&out_dir, &details)?;
+    }
 
     println!("Done in {:.1}s", start.elapsed().as_secs_f64());
     println!("Reports saved to: {}", out_dir.display());

@@ -1,4 +1,4 @@
-use crate::objects::BranchWeight;
+use crate::objects::{BranchDetail, BranchWeight};
 use anyhow::Result;
 use serde::Serialize;
 use std::fs;
@@ -115,4 +115,52 @@ fn format_size_mb(size: u64) -> String {
     } else {
         "0 MB".to_string()
     }
+}
+
+#[derive(Serialize)]
+struct CommitReport {
+    commit: String,
+    #[serde(rename = "sizeMB")]
+    size_mb: String,
+    size: u64,
+}
+
+#[derive(Serialize)]
+struct BranchWithCommits {
+    branch: String,
+    #[serde(rename = "totalSizeMB")]
+    total_size_mb: String,
+    #[serde(rename = "totalSize")]
+    total_size: u64,
+    commits: Vec<CommitReport>,
+}
+
+pub fn write_detailed_report(out_dir: &Path, details: &[BranchDetail]) -> Result<()> {
+    let reports: Vec<BranchWithCommits> = details
+        .iter()
+        .map(|d| {
+            let mut commits: Vec<CommitReport> = d.commits
+                .iter()
+                .map(|c| CommitReport {
+                    commit: c.commit.clone(),
+                    size_mb: format_size_mb(c.size),
+                    size: c.size,
+                })
+                .collect();
+            commits.sort_by(|a, b| b.size.cmp(&a.size));
+
+            BranchWithCommits {
+                branch: d.branch.clone(),
+                total_size_mb: format_size_mb(d.total_size),
+                total_size: d.total_size,
+                commits,
+            }
+        })
+        .collect();
+
+    let path = out_dir.join("branches_with_commits.json");
+    fs::write(&path, serde_json::to_string_pretty(&reports)?)?;
+
+    println!("Detailed report with commits saved");
+    Ok(())
 }
