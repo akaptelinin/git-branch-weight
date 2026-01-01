@@ -32,20 +32,24 @@ cargo build --release
 ## Usage
 
 ```bash
-git-branch-weight
+git-branch-weight [OPTIONS]
 
-Options
-  --repo, -r <path>   # path to the Git repository (default = cwd)
-  --out, -o <path>    # output directory for the report (default = ./branch-weight-report)
-  --branch, -b <name> # default branch name (auto-detects master/main)
+Options:
+  -r, --repo <path>     Path to Git repository (default: current dir)
+  -o, --out <path>      Output directory (default: ./unmerged-branches-size-report)
+  -B, --branch <name>   Default branch (auto-detects master/main)
+  -d, --details <N>     Analyze top N branches for per-commit breakdown
+  -y, --no-prompt       Disable interactive prompts
 ```
 
 ## Output
 
 ```
 <dir>/
-  branches.json    full stats, biggest first
-  branches.tsv     tab-separated for spreadsheets
+  branches.json           Light report (branch + sizes)
+  branches_full.json      Full report (+ object counts)
+  summary.json            Totals across all branches
+  branches_with_commits.json   Per-commit breakdown (with --details)
 ```
 
 ### Example: `branches.json`
@@ -54,25 +58,27 @@ Options
 [
   {
     "branch": "origin/feature/payments-v2",
-    "totalSizeMB": "125.4 MB",
-    "uniqueSizeMB": "120.1 MB",
-    "sharedSizeMB": "5.3 MB"
-  },
-  {
-    "branch": "origin/hotfix/billing",
-    "totalSizeMB": "84.2 MB",
-    "uniqueSizeMB": "12.0 MB",
-    "sharedSizeMB": "72.2 MB"
+    "totalSizeMB": "12.5 MB",
+    "uniqueSizeMB": "10.1 MB",
+    "sharedSizeMB": "2.4 MB"
   }
 ]
 ```
 
-### Example: `branches.tsv`
+### Example: `branches_with_commits.json` (with `--details`)
 
-```
-Branch	Total Size	Unique Size	Shared Size	Objects	Unique	Shared
-origin/feature/payments-v2	125.4 MB	120.1 MB	5.3 MB	1542	1500	42
-origin/hotfix/billing	84.2 MB	12.0 MB	72.2 MB	892	120	772
+```json
+[
+  {
+    "branch": "origin/feature/payments-v2",
+    "totalSizeMB": "12.5 MB",
+    "totalSize": 13107200,
+    "commits": [
+      {"commit": "abc123...", "sizeMB": "8.2 MB", "size": 8598323},
+      {"commit": "def456...", "sizeMB": "2.1 MB", "size": 2202009}
+    ]
+  }
+]
 ```
 
 ## Performance
@@ -83,15 +89,11 @@ origin/hotfix/billing	84.2 MB	12.0 MB	72.2 MB	892	120	772
 
 Uses parallel processing via [rayon](https://github.com/rayon-rs/rayon) and pipes `git rev-list` to `git cat-file` for efficient object enumeration.
 
-## Limits
+## Notes
 
 * Requires `git` CLI in PATH
 * Tested on macOS/Linux, should work on Windows with Git-for-Windows
-* Measures actual blob sizes, not estimated compressed size
-
-## See also
-
-* [unmerged-branches-weight](https://github.com/nickovchinnikov/unmerged-branches-weight) — Node.js version with estimated compression
+* Uses `objectsize:disk` — actual packed/compressed size in the repository
 
 ## License
 
