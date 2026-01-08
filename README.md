@@ -1,6 +1,6 @@
 # git-branch-weight
 
-CLI that scans a Git repository and shows how much disk space every **unmerged** branch uses
+Blazingly kind of slow CLI that scans a Git repository and shows how much disk space every **unmerged** branch uses
 
 ---
 
